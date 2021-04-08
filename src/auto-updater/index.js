@@ -1,57 +1,130 @@
-import { autoUpdater } from 'electron-updater'
-import i18n from 'i18next'
-import quitAndInstall from './quit-and-install'
-import logger from '../common/logger'
-import { notify } from '../common/notify'
+const { app, shell } = require('electron')
+const { autoUpdater } = require('electron-updater')
+const i18n = require('i18next')
+const logger = require('../common/logger')
+const { notify } = require('../common/notify')
+const { showDialog } = require('../dialogs')
+const quitAndInstall = require('./quit-and-install')
 
-let userRequested = false
+let feedback = false
+let installOnQuit = false
 
 function setup (ctx) {
   autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
 
-  autoUpdater.on('error', (err) => {
-    if (userRequested) {
-      userRequested = false
-      notify({
-        title: i18n.t('couldNotCheckForUpdates'),
-        body: i18n.t('pleaseCheckInternet')
-      })
+  /**
+   * this replaces the autoInstallOnAppQuit feature of autoUpdater, which causes the app
+   * to uninstall itself if it is installed for all users on a windows system.
+   *
+   * More info: https://github.com/ipfs-shipyard/ipfs-desktop/issues/1514
+   * Should be removed once https://github.com/electron-userland/electron-builder/issues/4815 is resolved.
+   */
+  app.once('before-quit', ev => {
+    if (installOnQuit) {
+      ev.preventDefault()
+      installOnQuit = false
+      autoUpdater.quitAndInstall(false, false)
     }
-
-    logger.error(`[updater] ${err.toString()}`)
   })
 
-  autoUpdater.on('update-available', async () => {
-    logger.info('[updater] update available. download started')
+  autoUpdater.on('error', err => {
+    logger.error(`[updater] ${err.toString()}`)
+
+    if (!feedback) {
+      return
+    }
+
+    feedback = false
+    showDialog({
+      title: i18n.t('updateErrorDialog.title'),
+      message: i18n.t('updateErrorDialog.message'),
+      type: 'error',
+      buttons: [
+        i18n.t('close')
+      ]
+    })
+  })
+
+  autoUpdater.on('update-available', async ({ version, releaseNotes }) => {
+    logger.info('[updater] update available, download will start')
 
     try {
       await autoUpdater.downloadUpdate()
     } catch (err) {
       logger.error(`[updater] ${err.toString()}`)
     }
-  })
 
-  autoUpdater.on('update-not-available', async () => {
-    if (userRequested) {
-      userRequested = false
-      notify({
-        title: i18n.t('updateNotAvailable'),
-        body: i18n.t('runningLatestVersion')
-      })
+    if (!feedback) {
+      return
+    }
+
+    // do not toggle feedback off here so we can show a dialog once the download
+    // is finished.
+
+    const opt = showDialog({
+      title: i18n.t('updateAvailableDialog.title'),
+      message: i18n.t('updateAvailableDialog.message', { version, releaseNotes }),
+      type: 'info',
+      buttons: [
+        i18n.t('close'),
+        i18n.t('readReleaseNotes')
+      ]
+    })
+
+    if (opt === 1) {
+      shell.openExternal(`https://github.com/ipfs-shipyard/ipfs-desktop/releases/v${version}`)
     }
   })
 
-  autoUpdater.on('update-downloaded', () => {
+  autoUpdater.on('update-not-available', ({ version }) => {
+    logger.info('[updater] update not available')
+
+    if (!feedback) {
+      return
+    }
+
+    feedback = false
+    showDialog({
+      title: i18n.t('updateNotAvailableDialog.title'),
+      message: i18n.t('updateNotAvailableDialog.message', { version }),
+      type: 'info',
+      buttons: [
+        i18n.t('close')
+      ]
+    })
+  })
+
+  autoUpdater.on('update-downloaded', ({ version }) => {
     logger.info('[updater] update downloaded')
 
-    notify({
-      title: i18n.t('updateAvailable'),
-      body: i18n.t('clickToInstall')
-    }, () => {
+    installOnQuit = true
+
+    const doIt = () => {
       setImmediate(() => {
         quitAndInstall(ctx)
       })
+    }
+
+    if (!feedback) {
+      notify({
+        title: i18n.t('updateDownloadedNotification.title'),
+        body: i18n.t('updateDownloadedNotification.message', { version })
+      }, doIt)
+    }
+
+    feedback = false
+
+    showDialog({
+      title: i18n.t('updateDownloadedDialog.title'),
+      message: i18n.t('updateDownloadedDialog.message', { version }),
+      type: 'info',
+      buttons: [
+        i18n.t('updateDownloadedDialog.action')
+      ]
     })
+
+    doIt()
   })
 }
 
@@ -63,12 +136,13 @@ async function checkForUpdates () {
   }
 }
 
-export default async function (ctx) {
+module.exports = async function (ctx) {
   if (process.env.NODE_ENV === 'development') {
     ctx.checkForUpdates = () => {
-      notify({
-        title: 'DEV Check for Updates',
-        body: 'Yes, you called this function successfully.'
+      showDialog({
+        title: 'Not available in development',
+        message: 'Yes, you called this function successfully.',
+        buttons: [i18n.t('close')]
       })
     }
 
@@ -81,7 +155,7 @@ export default async function (ctx) {
   setInterval(checkForUpdates, 43200000) // every 12 hours
 
   ctx.checkForUpdates = () => {
-    userRequested = true
+    feedback = true
     checkForUpdates()
   }
 }

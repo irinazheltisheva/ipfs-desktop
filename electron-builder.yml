@@ -4,11 +4,17 @@ generateUpdatesFilesForAllChannels: true
 directories:
   buildResources: assets/build
 
-asarUnpack: 'out/**/scripts/**/*'
+asarUnpack: 'src/**/scripts/**/*'
+
+afterSign: './pkgs/macos/notarize-build.js'
 
 mac:
   category: public.app-category.utilities
   darkModeSupport: true
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: './pkgs/macos/entitlements.mac.plist'
+  entitlementsInherit: './pkgs/macos/entitlements.mac.plist'
 
 dmg:
   iconSize: 160
@@ -27,13 +33,16 @@ dmg:
 
 nsis:
   include: assets/build/nsis.nsh
-  oneClick: true
+  oneClick: false
   warningsAsErrors: false
   perMachine: false
+  allowToChangeInstallationDirectory: true
 
 linux:
   artifactName: ${name}-${version}-${os}-${arch}.${ext}
   executableName: ipfs-desktop
+  executableArgs:
+    - --no-sandbox
   icon: ipfs-desktop
   category: Network;FileTransfer;P2P
   synopsis: A desktop client for IPFS
@@ -54,9 +63,7 @@ snap:
     - network-bind
     - removable-media
   publish:
-    - provider: snapStore
-      channels:
-        - stable
+    - github
 
 publish:
   - github

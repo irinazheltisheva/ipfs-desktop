@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import 'v8-compile-cache'
 import { app, dialog } from 'electron'
 import fixPath from 'fix-path'
@@ -19,6 +20,28 @@ import setupIpfsOnPath from './ipfs-on-path'
 import setupAnalytics from './analytics'
 import setupSecondInstance from './second-instance'
 import setupCohosting from './cohosting'
+=======
+require('v8-compile-cache')
+const { app, dialog } = require('electron')
+const fixPath = require('fix-path')
+const { criticalErrorDialog } = require('./dialogs')
+const logger = require('./common/logger')
+const setupProtocolHandlers = require('./protocol-handlers')
+const setupI18n = require('./i18n')
+const setupNpmOnIpfs = require('./npm-on-ipfs')
+const setupDaemon = require('./daemon')
+const setupWebUI = require('./webui')
+const setupAutoLaunch = require('./auto-launch')
+const setupDownloadCid = require('./download-cid')
+const setupTakeScreenshot = require('./take-screenshot')
+const setupAppMenu = require('./app-menu')
+const setupArgvFilesHandler = require('./argv-files-handler')
+const setupAutoUpdater = require('./auto-updater')
+const setupTray = require('./tray')
+const setupIpfsOnPath = require('./ipfs-on-path')
+const setupAnalytics = require('./analytics')
+const setupSecondInstance = require('./second-instance')
+>>>>>>> origin/dependabot/npm_and_yarn/electron-10.1.2
 
 // Hide Dock
 if (app.dock) app.dock.hide()
@@ -41,6 +64,12 @@ app.on('will-finish-launching', () => {
 })
 
 function handleError (err) {
+  // Ignore network errors that might happen during the
+  // execution.
+  if (err.stack.includes('net::')) {
+    return
+  }
+
   logger.error(err)
   criticalErrorDialog(err)
 }
@@ -61,10 +90,10 @@ async function run () {
     await setupI18n(ctx)
     await setupAppMenu(ctx)
 
-    await setupAutoUpdater(ctx) // ctx.checkForUpdates
     await setupWebUI(ctx) // ctx.webui, launchWebUI
     await setupTray(ctx) // ctx.tray
     await setupDaemon(ctx) // ctx.getIpfsd, startIpfs, stopIpfs, restartIpfs
+    await setupAutoUpdater(ctx) // ctx.checkForUpdates
 
     await Promise.all([
       setupArgvFilesHandler(ctx),
@@ -72,7 +101,7 @@ async function run () {
       setupSecondInstance(ctx),
       setupCohosting(ctx),
       // Setup global shortcuts
-      setupDownloadHash(ctx),
+      setupDownloadCid(ctx),
       setupTakeScreenshot(ctx),
       // Setup PATH-related features
       setupNpmOnIpfs(ctx),

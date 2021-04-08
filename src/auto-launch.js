@@ -1,34 +1,20 @@
-import AutoLaunch from 'auto-launch'
-import { app } from 'electron'
-import os from 'os'
-import path from 'path'
-import fs from 'fs-extra'
-import untildify from 'untildify'
-import createToggler from './create-toggler'
-import logger from './common/logger'
-import store from './common/store'
-import { IS_MAC, IS_WIN } from './common/consts'
+const { app } = require('electron')
+const i18n = require('i18next')
+const os = require('os')
+const path = require('path')
+const fs = require('fs-extra')
+const untildify = require('untildify')
+const createToggler = require('./utils/create-toggler')
+const logger = require('./common/logger')
+const store = require('./common/store')
+const { IS_MAC, IS_WIN } = require('./common/consts')
+const { showDialog, recoverableErrorDialog } = require('./dialogs')
 
 const CONFIG_KEY = 'autoLaunch'
 
 function isSupported () {
   const plat = os.platform()
   return plat === 'linux' || plat === 'win32' || plat === 'darwin'
-}
-
-// Disable the old auto launch mechanism.
-// TODO: remove on 0.10.0.
-async function disableOldLogin () {
-  try {
-    const autoLauncher = new AutoLaunch({ name: 'IPFS Desktop' })
-
-    if (await autoLauncher.isEnabled()) {
-      await autoLauncher.disable()
-      logger.error('[launch on startup] old mechanism disabled')
-    }
-  } catch (_) {
-    // ignore...
-  }
 }
 
 function getDesktopFile () {
@@ -63,24 +49,40 @@ async function disable () {
   await fs.remove(getDesktopFile())
 }
 
-export default async function (ctx) {
-  await disableOldLogin()
-
-  const activate = async (value, oldValue) => {
+module.exports = async function () {
+  const activate = async ({ newValue, oldValue, feedback }) => {
     if (process.env.NODE_ENV === 'development') {
       logger.info('[launch on startup] unavailable during development')
+
+      if (feedback) {
+        showDialog({
+          title: 'Launch at Login',
+          message: 'Not available during development.',
+          buttons: [i18n.t('close')]
+        })
+      }
+
       return
     }
 
     if (!isSupported()) {
       logger.info('[launch on startup] not supported on this platform')
+
+      if (feedback) {
+        showDialog({
+          title: i18n.t('launchAtLoginNotSupported.title'),
+          message: i18n.t('launchAtLoginNotSupported.message'),
+          buttons: [i18n.t('close')]
+        })
+      }
+
       return false
     }
 
-    if (value === oldValue) return
+    if (newValue === oldValue) return
 
     try {
-      if (value === true) {
+      if (newValue === true) {
         await enable()
         logger.info('[launch on startup] enabled')
       } else {
@@ -91,10 +93,21 @@ export default async function (ctx) {
       return true
     } catch (err) {
       logger.error(`[launch on startup] ${err.toString()}`)
+
+      if (feedback) {
+        recoverableErrorDialog(err, {
+          title: i18n.t('launchAtLoginFailed.title'),
+          message: i18n.t('launchAtLoginFailed.message')
+        })
+      }
+
       return false
     }
   }
 
-  activate(store.get(CONFIG_KEY, false))
-  createToggler(ctx, CONFIG_KEY, activate)
+  activate({ newValue: store.get(CONFIG_KEY, false) })
+  createToggler(CONFIG_KEY, activate)
 }
+
+module.exports.CONFIG_KEY = CONFIG_KEY
+module.exports.isSupported = isSupported

@@ -1,14 +1,40 @@
-import { Menu, Tray, shell, app, ipcMain } from 'electron'
-import i18n from 'i18next'
-import path from 'path'
-import { SHORTCUT as SCREENSHOT_SHORTCUT, takeScreenshot } from './take-screenshot'
-import { SHORTCUT as HASH_SHORTCUT, downloadHash } from './download-hash'
-import addToIpfs from './add-to-ipfs'
-import { STATUS } from './daemon'
-import logger from './common/logger'
-import store from './common/store'
-import { IS_MAC, IS_WIN, VERSION, GO_IPFS_VERSION } from './common/consts'
-import moveRepositoryLocation from './move-repository-location'
+const { Menu, Tray, shell, app, ipcMain } = require('electron')
+const i18n = require('i18next')
+const path = require('path')
+const addToIpfs = require('./add-to-ipfs')
+const logger = require('./common/logger')
+const store = require('./common/store')
+const moveRepositoryLocation = require('./move-repository-location')
+const runGarbageCollector = require('./run-gc')
+const { setCustomBinary, clearCustomBinary, hasCustomBinary } = require('./custom-ipfs-binary')
+const { STATUS } = require('./daemon')
+const { IS_MAC, IS_WIN, VERSION, GO_IPFS_VERSION } = require('./common/consts')
+
+const { CONFIG_KEY: SCREENSHOT_KEY, SHORTCUT: SCREENSHOT_SHORTCUT, takeScreenshot } = require('./take-screenshot')
+const { CONFIG_KEY: DOWNLOAD_KEY, SHORTCUT: DOWNLOAD_SHORTCUT, downloadCid } = require('./download-cid')
+const { CONFIG_KEY: AUTO_LAUNCH_KEY, isSupported: supportsLaunchAtLogin } = require('./auto-launch')
+const { CONFIG_KEY: IPFS_PATH_KEY } = require('./ipfs-on-path')
+const { CONFIG_KEY: NPM_IPFS_KEY } = require('./npm-on-ipfs')
+const { CONFIG_KEY: AUTO_LAUNCH_WEBUI_KEY } = require('./webui')
+
+const CONFIG_KEYS = [
+  AUTO_LAUNCH_KEY,
+  AUTO_LAUNCH_WEBUI_KEY,
+  IPFS_PATH_KEY,
+  NPM_IPFS_KEY,
+  SCREENSHOT_KEY,
+  DOWNLOAD_KEY
+]
+
+function buildCheckbox (key, label) {
+  return {
+    id: key,
+    label: i18n.t(label),
+    click: () => { ipcMain.emit(`toggle_${key}`) },
+    type: 'checkbox',
+    checked: false
+  }
+}
 
 // Notes on this: we are only supporting accelerators on macOS for now because
 // they natively work as soon as the menu opens. They don't work like that on Windows
@@ -21,7 +47,8 @@ function buildMenu (ctx) {
       ['ipfsIsRunning', 'green'],
       ['ipfsIsStopping', 'yellow'],
       ['ipfsIsNotRunning', 'gray'],
-      ['ipfsHasErrored', 'red']
+      ['ipfsHasErrored', 'red'],
+      ['runningWithGC', 'yellow']
     ].map(([status, color]) => ({
       id: status,
       label: i18n.t(status),
@@ -50,16 +77,19 @@ function buildMenu (ctx) {
     },
     { type: 'separator' },
     {
+      id: 'webuiStatus',
       label: i18n.t('status'),
       click: () => { ctx.launchWebUI('/') }
     },
     {
+      id: 'webuiFiles',
       label: i18n.t('files'),
       click: () => { ctx.launchWebUI('/files') }
     },
     {
-      label: i18n.t('settings'),
-      click: () => { ctx.launchWebUI('/settings') }
+      id: 'webuiPeers',
+      label: i18n.t('peers'),
+      click: () => { ctx.launchWebUI('/peers') }
     },
     { type: 'separator' },
     {
@@ -70,13 +100,39 @@ function buildMenu (ctx) {
       enabled: false
     },
     {
-      id: 'downloadHash',
-      label: i18n.t('downloadHash'),
-      click: () => { downloadHash(ctx) },
-      accelerator: IS_MAC ? HASH_SHORTCUT : null,
+      id: 'downloadCid',
+      label: i18n.t('downloadCid'),
+      click: () => { downloadCid(ctx) },
+      accelerator: IS_MAC ? DOWNLOAD_SHORTCUT : null,
       enabled: false
     },
     { type: 'separator' },
+    {
+      label: IS_MAC ? i18n.t('settings.preferences') : i18n.t('settings.settings'),
+      submenu: [
+        {
+          id: 'webuiNodeSettings',
+          label: i18n.t('settings.openNodeSettings'),
+          click: () => { ctx.launchWebUI('/settings') }
+        },
+        { type: 'separator' },
+        {
+          label: i18n.t('settings.appPreferences'),
+          enabled: false
+        },
+        buildCheckbox(AUTO_LAUNCH_KEY, 'settings.launchOnStartup'),
+        buildCheckbox(AUTO_LAUNCH_WEBUI_KEY, 'settings.openWebUIAtLaunch'),
+        buildCheckbox(IPFS_PATH_KEY, 'settings.ipfsCommandLineTools'),
+        buildCheckbox(SCREENSHOT_KEY, 'settings.takeScreenshotShortcut'),
+        buildCheckbox(DOWNLOAD_KEY, 'settings.downloadHashShortcut'),
+        { type: 'separator' },
+        {
+          label: i18n.t('settings.experiments'),
+          enabled: false
+        },
+        buildCheckbox(NPM_IPFS_KEY, 'settings.npmOnIpfs')
+      ]
+    },
     {
       label: i18n.t('advanced'),
       submenu: [
@@ -92,9 +148,30 @@ function buildMenu (ctx) {
           label: i18n.t('openConfigFile'),
           click: () => { shell.openItem(store.path) }
         },
+        { type: 'separator' },
         {
+          id: 'runGarbageCollector',
+          label: i18n.t('runGarbageCollector'),
+          click: () => { runGarbageCollector(ctx) },
+          enabled: false
+        },
+        { type: 'separator' },
+        {
+          id: 'moveRepositoryLocation',
           label: i18n.t('moveRepositoryLocation'),
           click: () => { moveRepositoryLocation(ctx) }
+        },
+        {
+          id: 'setCustomBinary',
+          label: i18n.t('setCustomIpfsBinary'),
+          click: () => { setCustomBinary(ctx) },
+          visible: false
+        },
+        {
+          id: 'clearCustomBinary',
+          label: i18n.t('clearCustomIpfsBinary'),
+          click: () => { clearCustomBinary(ctx) },
+          visible: false
         }
       ]
     },
@@ -110,7 +187,9 @@ function buildMenu (ctx) {
           click: () => { shell.openExternal('https://github.com/ipfs-shipyard/ipfs-desktop/releases') }
         },
         {
-          label: `go-ipfs ${GO_IPFS_VERSION}`,
+          label: hasCustomBinary()
+            ? i18n.t('customIpfsBinary')
+            : `go-ipfs ${GO_IPFS_VERSION}`,
           click: () => { shell.openExternal('https://github.com/ipfs/go-ipfs/releases') }
         },
         { type: 'separator' },
@@ -118,9 +197,14 @@ function buildMenu (ctx) {
           label: i18n.t('checkForUpdates'),
           click: () => { ctx.checkForUpdates() }
         },
+        { type: 'separator' },
         {
           label: i18n.t('viewOnGitHub'),
           click: () => { shell.openExternal('https://github.com/ipfs-shipyard/ipfs-desktop/blob/master/README.md') }
+        },
+        {
+          label: i18n.t('helpUsTranslate'),
+          click: () => { shell.openExternal('https://www.transifex.com/ipfs/ipfs-desktop/') }
         }
       ]
     },
@@ -132,21 +216,28 @@ function buildMenu (ctx) {
   ])
 }
 
-function icon (color) {
-  const p = path.resolve(path.join(__dirname, '../assets/icons/tray'))
+const on = 'on'
+const off = 'off'
 
-  if (IS_MAC) {
-    return path.join(p, `${color}.png`)
+function icon (color) {
+  const dir = path.resolve(path.join(__dirname, '../assets/icons/tray'))
+
+  if (!IS_MAC) {
+    return path.join(dir, `${color}-big.png`)
   }
 
-  return path.join(p, `${color}-big.png`)
+  return path.join(dir, `${color}-22Template.png`)
 }
 
-export default function (ctx) {
+module.exports = function (ctx) {
   logger.info('[tray] starting')
-  const tray = new Tray(icon('black'))
+  const tray = new Tray(icon(off))
   let menu = null
-  let status = {}
+
+  const state = {
+    status: null,
+    gcRunning: false
+  }
 
   // macOS tray drop files
   tray.on('drop-files', async (_, files) => {
@@ -165,36 +256,59 @@ export default function (ctx) {
 
   const setupMenu = () => {
     menu = buildMenu(ctx)
+
     tray.setContextMenu(menu)
     tray.setToolTip('IPFS Desktop')
 
     menu.on('menu-will-show', () => { ipcMain.emit('menubar-will-open') })
     menu.on('menu-will-close', () => { ipcMain.emit('menubar-will-close') })
 
-    updateStatus(status)
+    updateMenu()
   }
 
-  const updateStatus = data => {
-    status = data
+  const updateMenu = () => {
+    const { status, gcRunning } = state
+    const errored = status === STATUS.STARTING_FAILED || status === STATUS.STOPPING_FAILED
 
-    menu.getMenuItemById('ipfsIsStarting').visible = status === STATUS.STARTING_STARTED
-    menu.getMenuItemById('ipfsIsRunning').visible = status === STATUS.STARTING_FINISHED
-    menu.getMenuItemById('ipfsIsStopping').visible = status === STATUS.STOPPING_STARTED
-    menu.getMenuItemById('ipfsIsNotRunning').visible = status === STATUS.STOPPING_FINISHED
-    menu.getMenuItemById('ipfsHasErrored').visible = status === STATUS.STARTING_FAILED ||
-      status === STATUS.STOPPING_FAILED
-    menu.getMenuItemById('restartIpfs').visible = status === STATUS.STARTING_FINISHED ||
-      menu.getMenuItemById('ipfsHasErrored').visible
-    menu.getMenuItemById('startIpfs').visible = menu.getMenuItemById('ipfsIsNotRunning').visible
-    menu.getMenuItemById('stopIpfs').visible = menu.getMenuItemById('ipfsIsRunning').visible
+    menu.getMenuItemById('ipfsIsStarting').visible = status === STATUS.STARTING_STARTED && !gcRunning
+    menu.getMenuItemById('ipfsIsRunning').visible = status === STATUS.STARTING_FINISHED && !gcRunning
+    menu.getMenuItemById('ipfsIsStopping').visible = status === STATUS.STOPPING_STARTED && !gcRunning
+    menu.getMenuItemById('ipfsIsNotRunning').visible = status === STATUS.STOPPING_FINISHED && !gcRunning
+    menu.getMenuItemById('ipfsHasErrored').visible = errored && !gcRunning
+    menu.getMenuItemById('runningWithGC').visible = gcRunning
 
-    menu.getMenuItemById('takeScreenshot').enabled = menu.getMenuItemById('ipfsIsRunning').visible
-    menu.getMenuItemById('downloadHash').enabled = menu.getMenuItemById('ipfsIsRunning').visible
+    menu.getMenuItemById('startIpfs').visible = status === STATUS.STOPPING_FINISHED
+    menu.getMenuItemById('stopIpfs').visible = status === STATUS.STARTING_FINISHED
+    menu.getMenuItemById('restartIpfs').visible = (status === STATUS.STARTING_FINISHED || errored)
+
+    menu.getMenuItemById('webuiStatus').enabled = status === STATUS.STARTING_FINISHED
+    menu.getMenuItemById('webuiFiles').enabled = status === STATUS.STARTING_FINISHED
+    menu.getMenuItemById('webuiPeers').enabled = status === STATUS.STARTING_FINISHED
+    menu.getMenuItemById('webuiNodeSettings').enabled = status === STATUS.STARTING_FINISHED
+
+    menu.getMenuItemById('startIpfs').enabled = !gcRunning
+    menu.getMenuItemById('stopIpfs').enabled = !gcRunning
+    menu.getMenuItemById('restartIpfs').enabled = !gcRunning
+
+    menu.getMenuItemById(AUTO_LAUNCH_KEY).enabled = supportsLaunchAtLogin()
+    menu.getMenuItemById('takeScreenshot').enabled = status === STATUS.STARTING_FINISHED
+    menu.getMenuItemById('downloadCid').enabled = status === STATUS.STARTING_FINISHED
+
+    menu.getMenuItemById('moveRepositoryLocation').enabled = !gcRunning && status !== STATUS.STOPPING_STARTED
+    menu.getMenuItemById('runGarbageCollector').enabled = menu.getMenuItemById('ipfsIsRunning').visible && !gcRunning
+
+    menu.getMenuItemById('setCustomBinary').visible = !hasCustomBinary()
+    menu.getMenuItemById('clearCustomBinary').visible = hasCustomBinary()
 
     if (status === STATUS.STARTING_FINISHED) {
-      tray.setImage(icon('ice'))
+      tray.setImage(icon(on))
     } else {
-      tray.setImage(icon('black'))
+      tray.setImage(icon(off))
+    }
+
+    // Update configuration checkboxes.
+    for (const key of CONFIG_KEYS) {
+      menu.getMenuItemById(key).checked = store.get(key, false)
     }
 
     if (!IS_MAC && !IS_WIN) {
@@ -204,8 +318,24 @@ export default function (ctx) {
     }
   }
 
-  ipcMain.on('ipfsd', (status) => { updateStatus(status) })
-  ipcMain.on('languageUpdated', () => { setupMenu(status) })
+  ipcMain.on('ipfsd', status => {
+    state.status = status
+    updateMenu()
+  })
+
+  ipcMain.on('gcRunning', () => {
+    state.gcRunning = true
+    updateMenu()
+  })
+
+  ipcMain.on('gcEnded', () => {
+    state.gcRunning = false
+    updateMenu()
+  })
+
+  ipcMain.on('configUpdated', () => { updateMenu() })
+  ipcMain.on('languageUpdated', () => { setupMenu() })
+
   setupMenu()
 
   ctx.tray = tray

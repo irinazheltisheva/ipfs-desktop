@@ -1,21 +1,13 @@
-import { app, ipcMain } from 'electron'
-import fs from 'fs-extra'
-import { join } from 'path'
-import createDaemon from './daemon'
-import { ipfsNotRunningDialog } from '../dialogs'
-import store from '../common/store'
-import logger from '../common/logger'
+const { app, ipcMain } = require('electron')
+const fs = require('fs-extra')
+const { join } = require('path')
+const { ipfsNotRunningDialog } = require('../dialogs')
+const store = require('../common/store')
+const logger = require('../common/logger')
+const { STATUS } = require('./consts')
+const createDaemon = require('./daemon')
 
-export const STATUS = {
-  STARTING_STARTED: 1,
-  STARTING_FINISHED: 2,
-  STARTING_FAILED: 3,
-  STOPPING_STARTED: 4,
-  STOPPING_FINISHED: 5,
-  STOPPING_FAILED: 6
-}
-
-export default async function (ctx) {
+module.exports = async function (ctx) {
   let ipfsd = null
   let status = null
   let wasOnline = null
@@ -64,8 +56,8 @@ export default async function (ctx) {
       // Update the path if it was blank previously.
       // This way we use the default path when it is
       // not set.
-      if (config.path === '') {
-        config.path = ipfsd.repoPath
+      if (!config.path || typeof config.path !== 'string') {
+        config.path = ipfsd.path
         store.set('ipfsConfig', config)
         writeIpfsPath(config.path)
       }
@@ -86,7 +78,7 @@ export default async function (ctx) {
     const log = logger.start('[ipfsd] stop daemon', { withAnalytics: 'DAEMON_STOP' })
     updateStatus(STATUS.STOPPING_STARTED)
 
-    if (!fs.pathExists(join(ipfsd.repoPath, 'config'))) {
+    if (!fs.pathExistsSync(join(ipfsd.path, 'config'))) {
       // Is remote api... ignore
       ipfsd = null
       updateStatus(STATUS.STOPPING_FINISHED)
@@ -94,13 +86,11 @@ export default async function (ctx) {
     }
 
     try {
-      // give ipfs 3s to stop. An unclean shutdown is preferable to making the
-      // user wait, and taking longer prevents the update mechanism from working.
-      await ipfsd.stop(180)
+      await ipfsd.stop()
       log.end()
       updateStatus(STATUS.STOPPING_FINISHED)
     } catch (err) {
-      logger.error(`[ipfsd] ${err.toString}`)
+      logger.error(`[ipfsd] ${err.toString()}`)
       updateStatus(STATUS.STOPPING_FAILED)
     } finally {
       ipfsd = null
@@ -137,6 +127,8 @@ export default async function (ctx) {
     wasOnline = isOnline
   })
 }
+
+module.exports.STATUS = STATUS
 
 function writeIpfsPath (path) {
   fs.outputFileSync(

@@ -1,13 +1,20 @@
-import { screen, BrowserWindow, ipcMain, app, session } from 'electron'
-import { join } from 'path'
-import { URL } from 'url'
-import serve from 'electron-serve'
-import openExternal from './open-external'
-import logger from '../common/logger'
-import store from '../common/store'
-import dock from '../dock'
+const { screen, BrowserWindow, ipcMain, app, session } = require('electron')
+const { join } = require('path')
+const { URL } = require('url')
+const toUri = require('multiaddr-to-uri')
+const serve = require('electron-serve')
+const os = require('os')
+const openExternal = require('./open-external')
+const logger = require('../common/logger')
+const store = require('../common/store')
+const { IS_MAC, IS_WIN } = require('../common/consts')
+const dock = require('../utils/dock')
+const { VERSION, ELECTRON_VERSION } = require('../common/consts')
+const createToggler = require('../utils/create-toggler')
 
 serve({ scheme: 'webui', directory: join(__dirname, '../../assets/webui') })
+
+const CONFIG_KEY = 'openWebUIAtLaunch'
 
 const createWindow = () => {
   const dimensions = screen.getPrimaryDisplay()
@@ -58,7 +65,30 @@ const createWindow = () => {
   return window
 }
 
-export default async function (ctx) {
+// Converts a Multiaddr to a valid value for Origin HTTP header
+const apiOrigin = (apiMultiaddr) => {
+  // Return opaque origin when there is no API yet
+  // https://html.spec.whatwg.org/multipage/origin.html#concept-origin-opaque
+  if (!apiMultiaddr) return 'null'
+  // Return the Origin of HTTP API
+  const apiUri = toUri(apiMultiaddr, { assumeHttp: true })
+  return new URL(apiUri).origin
+}
+
+module.exports = async function (ctx) {
+  if (store.get(CONFIG_KEY, null) === null) {
+    // First time running this. If it's not macOS, nor Windows,
+    // enable opening ipfs-webui at app launch.
+    // This is the best we can do to mitigate Tray issues on Linux:
+    // https://github.com/ipfs-shipyard/ipfs-desktop/issues/1153
+    store.set(CONFIG_KEY, !IS_MAC && !IS_WIN)
+  }
+
+  createToggler(CONFIG_KEY, async ({ newValue }) => {
+    store.set(CONFIG_KEY, newValue)
+    return true
+  })
+
   openExternal()
 
   const window = createWindow(ctx)
@@ -66,12 +96,17 @@ export default async function (ctx) {
 
   ctx.webui = window
 
-  ctx.launchWebUI = (url, { focus = true } = {}) => {
-    if (!url) {
+  const url = new URL('/', 'webui://-')
+  url.hash = '/blank'
+  url.searchParams.set('deviceId', ctx.countlyDeviceId)
+
+  ctx.launchWebUI = (path, { focus = true } = {}) => {
+    if (!path) {
       logger.info('[web ui] launching web ui')
     } else {
-      logger.info(`[web ui] navigate to ${url}`)
-      window.webContents.send('updatedPage', url)
+      logger.info(`[web ui] navigate to ${path}`)
+      window.webContents.send('updatedPage', path)
+      url.hash = path
     }
 
     if (focus) {
@@ -80,10 +115,6 @@ export default async function (ctx) {
       dock.show()
     }
   }
-
-  const url = new URL('/', 'webui://-')
-  url.hash = '/blank'
-  url.searchParams.set('deviceId', ctx.countlyDeviceId)
 
   function updateLanguage () {
     url.searchParams.set('lng', store.get('language'))
@@ -101,17 +132,40 @@ export default async function (ctx) {
   })
 
   ipcMain.on('config.get', () => {
-    window.webContents.send('config.changed', { config: store.store })
+    window.webContents.send('config.changed', {
+      platform: os.platform(),
+      config: store.store
+    })
   })
 
+  // Avoid setting CORS by acting like /webui loaded from API port
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    delete details.requestHeaders.Origin
+    details.requestHeaders.Origin = apiOrigin(apiAddress)
+    details.requestHeaders['User-Agent'] = `ipfs-desktop/${VERSION} (Electron ${ELECTRON_VERSION})`
     callback({ cancel: false, requestHeaders: details.requestHeaders }) // eslint-disable-line
+  })
+
+  // modify CORS preflight on the fly
+  const webuiOrigin = 'webui://-'
+  const acao = 'Access-Control-Allow-Origin'
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const { responseHeaders } = details
+    // If Access-Control-Allow-Origin header is returned, override it to match webuiOrigin
+    if (responseHeaders && responseHeaders[acao]) {
+      responseHeaders[acao] = webuiOrigin
+    }
+    // eslint-disable-next-line
+    callback({ responseHeaders })
   })
 
   return new Promise(resolve => {
     window.once('ready-to-show', () => {
       logger.info('[web ui] window ready')
+
+      if (store.get(CONFIG_KEY)) {
+        ctx.launchWebUI('/')
+      }
+
       resolve()
     })
 
@@ -119,3 +173,5 @@ export default async function (ctx) {
     window.loadURL(url.toString())
   })
 }
+
+module.exports.CONFIG_KEY = CONFIG_KEY

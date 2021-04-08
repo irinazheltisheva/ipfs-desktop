@@ -1,12 +1,14 @@
-import showDialog from './dialog'
-import { criticalErrorDialog, recoverableErrorDialog } from './errors'
-import ipfsNotRunningDialog from './ipfs-not-running'
-import selectDirectory from './select-directory'
+const showDialog = require('./dialog')
+const showPrompt = require('./prompt')
+const { criticalErrorDialog, recoverableErrorDialog } = require('./errors')
+const ipfsNotRunningDialog = require('./ipfs-not-running')
+const selectDirectory = require('./select-directory')
 
-export {
+module.exports = Object.freeze({
   showDialog,
+  showPrompt,
   criticalErrorDialog,
   recoverableErrorDialog,
   ipfsNotRunningDialog,
   selectDirectory
-}
+})

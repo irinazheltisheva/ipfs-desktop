@@ -1,16 +1,28 @@
-import { join } from 'path'
-import fs from 'fs-extra'
-import multiaddr from 'multiaddr'
-import http from 'http'
-import getPort from 'get-port'
-import { shell } from 'electron'
-import i18n from 'i18next'
-import { showDialog } from '../dialogs'
-import store from '../common/store'
-import logger from '../common/logger'
+const { join } = require('path')
+const fs = require('fs-extra')
+const multiaddr = require('multiaddr')
+const http = require('http')
+const portfinder = require('portfinder')
+const { shell } = require('electron')
+const i18n = require('i18next')
+const { showDialog } = require('../dialogs')
+const store = require('../common/store')
+const logger = require('../common/logger')
 
-export function configPath (ipfsd) {
-  return join(ipfsd.repoPath, 'config')
+function configExists (ipfsd) {
+  return fs.pathExistsSync(join(ipfsd.path, 'config'))
+}
+
+function apiFileExists (ipfsd) {
+  return fs.pathExistsSync(join(ipfsd.path, 'api'))
+}
+
+function rmApiFile (ipfsd) {
+  return fs.removeSync(join(ipfsd.path, 'api'))
+}
+
+function configPath (ipfsd) {
+  return join(ipfsd.path, 'config')
 }
 
 function readConfigFile (ipfsd) {
@@ -21,10 +33,10 @@ function writeConfigFile (ipfsd, config) {
   fs.writeJsonSync(configPath(ipfsd), config, { spaces: 2 })
 }
 
-// Set default mininum and maximum of connections to mantain
+// Set default minimum and maximum of connections to maintain
 // by default. This must only be called for repositories created
 // by IPFS Desktop. Existing ones shall remain intact.
-export function applyDefaults (ipfsd) {
+function applyDefaults (ipfsd) {
   const config = readConfigFile(ipfsd)
 
   // Ensure strict CORS checking
@@ -40,9 +52,51 @@ export function applyDefaults (ipfsd) {
 
   config.Discovery = config.Discovery || {}
   config.Discovery.MDNS = config.Discovery.MDNS || {}
-  config.Discovery.MDNS.enabled = true
+  config.Discovery.MDNS.Enabled = true
 
   writeConfigFile(ipfsd, config)
+}
+
+// Apply one-time updates to the config of IPFS node.
+// This is the place where we execute fixes and performance tweaks for existing users.
+function migrateConfig (ipfsd) {
+  // Bump revision number when new migration rule is added
+  const REVISION = 1
+  const REVISION_KEY = 'daemonConfigRevision'
+
+  // Migration is applied only once per revision
+  if (store.get(REVISION_KEY) >= REVISION) return
+
+  // Read config
+  let config = null
+  let changed = false
+  try {
+    config = readConfigFile(ipfsd)
+  } catch (err) {
+    // This is a best effort check, dont blow up here, that should happen else where.
+    logger.error(`[daemon] migrateConfig: error reading config file: ${err.message || err}`)
+    return
+  }
+
+  // Cleanup https://github.com/ipfs-shipyard/ipfs-desktop/issues/1631
+  if (config.Discovery && config.Discovery.MDNS && config.Discovery.MDNS.enabled) {
+    config.Discovery.MDNS.Enabled = config.Discovery.MDNS.Enabled || true
+    delete config.Discovery.MDNS.enabled
+    changed = true
+  }
+
+  // TODO: update config.Swarm.ConnMgr.*
+
+  if (changed) {
+    try {
+      writeConfigFile(ipfsd, config)
+      store.set(REVISION_KEY, REVISION)
+    } catch (err) {
+      logger.error(`[daemon] migrateConfig: error writing config file: ${err.message || err}`)
+      return
+    }
+  }
+  store.set(REVISION_KEY, REVISION)
 }
 
 // Check for * and webui://- in allowed origins on API headers.
@@ -52,7 +106,7 @@ export function applyDefaults (ipfsd) {
 // We remove them the first time we find them. If we find it again on subsequent
 // runs then we leave them in, under the assumption that you really want it.
 // TODO: show warning in UI when wildcard is in the allowed origins.
-export function checkCorsConfig (ipfsd) {
+function checkCorsConfig (ipfsd) {
   if (store.get('checkedCorsConfig')) {
     // We've already checked so skip it.
     return
@@ -101,7 +155,7 @@ const parseCfgMultiaddr = (addr) => (addr.includes('/http')
 
 async function checkIfAddrIsDaemon (addr) {
   const options = {
-    method: 'GET',
+    method: 'POST',
     host: addr.address,
     port: addr.port,
     path: '/api/v0/refs?arg=/ipfs/QmUNLLsPACCz1vLxQVkXqqLX5R1X345qqfHbsf67hvA3Nn'
@@ -137,7 +191,7 @@ async function checkPortsArray (ipfsd, addrs) {
       continue
     }
 
-    const freePort = await getPort({ port: getPort.makeRange(port, port + 100) })
+    const freePort = await portfinder.getPortPromise({ port: port, stopPort: port + 100 })
 
     if (port !== freePort) {
       const opt = showDialog({
@@ -151,7 +205,7 @@ async function checkPortsArray (ipfsd, addrs) {
       })
 
       if (opt === 0) {
-        shell.openItem(join(ipfsd.repoPath, 'config'))
+        shell.openItem(join(ipfsd.path, 'config'))
       }
 
       throw new Error('ports already being used')
@@ -159,7 +213,7 @@ async function checkPortsArray (ipfsd, addrs) {
   }
 }
 
-export async function checkPorts (ipfsd) {
+async function checkPorts (ipfsd) {
   const config = readConfigFile(ipfsd)
 
   const apiIsArr = Array.isArray(config.Addresses.API)
@@ -184,8 +238,13 @@ export async function checkPorts (ipfsd) {
   const apiPort = parseInt(configApiMa.nodeAddress().port, 10)
   const gatewayPort = parseInt(configGatewayMa.nodeAddress().port, 10)
 
-  const freeGatewayPort = await getPort({ port: getPort.makeRange(gatewayPort, gatewayPort + 100) })
-  const freeApiPort = await getPort({ port: getPort.makeRange(apiPort, apiPort + 100) })
+  const findFreePort = async (port, from) => {
+    port = Math.max(port, from, 1024)
+    return portfinder.getPortPromise({ port, stopPort: port + 100 })
+  }
+
+  const freeGatewayPort = await findFreePort(gatewayPort, 8080)
+  const freeApiPort = await findFreePort(apiPort, 5001)
 
   const busyApiPort = apiPort !== freeApiPort
   const busyGatewayPort = gatewayPort !== freeGatewayPort
@@ -194,46 +253,51 @@ export async function checkPorts (ipfsd) {
     return
   }
 
-  let message = null
-  let options = null
+  // two "0" in config mean "pick free ports without any prompt"
+  const promptUser = (apiPort !== 0 || gatewayPort !== 0)
 
-  if (busyApiPort && busyGatewayPort) {
-    logger.info('[daemon] api and gateway ports busy')
-    message = 'busyPortsDialog'
-    options = {
-      port1: apiPort,
-      alt1: freeApiPort,
-      port2: gatewayPort,
-      alt2: freeGatewayPort
-    }
-  } else if (busyApiPort) {
-    logger.info('[daemon] api port busy')
-    message = 'busyPortDialog'
-    options = {
-      port: apiPort,
-      alt: freeApiPort
-    }
-  } else {
-    logger.info('[daemon] gateway port busy')
-    message = 'busyPortDialog'
-    options = {
-      port: gatewayPort,
-      alt: freeGatewayPort
-    }
-  }
+  if (promptUser) {
+    let message = null
+    let options = null
 
-  const opt = showDialog({
-    title: i18n.t(`${message}.title`),
-    message: i18n.t(`${message}.message`, options),
-    type: 'error',
-    buttons: [
-      i18n.t(`${message}.action`, options),
-      i18n.t('close')
-    ]
-  })
+    if (busyApiPort && busyGatewayPort) {
+      logger.info('[daemon] api and gateway ports busy')
+      message = 'busyPortsDialog'
+      options = {
+        port1: apiPort,
+        alt1: freeApiPort,
+        port2: gatewayPort,
+        alt2: freeGatewayPort
+      }
+    } else if (busyApiPort) {
+      logger.info('[daemon] api port busy')
+      message = 'busyPortDialog'
+      options = {
+        port: apiPort,
+        alt: freeApiPort
+      }
+    } else {
+      logger.info('[daemon] gateway port busy')
+      message = 'busyPortDialog'
+      options = {
+        port: gatewayPort,
+        alt: freeGatewayPort
+      }
+    }
 
-  if (opt !== 0) {
-    throw new Error('ports already being used')
+    const opt = showDialog({
+      title: i18n.t(`${message}.title`),
+      message: i18n.t(`${message}.message`, options),
+      type: 'error',
+      buttons: [
+        i18n.t(`${message}.action`, options),
+        i18n.t('close')
+      ]
+    })
+
+    if (opt !== 0) {
+      throw new Error('ports already being used')
+    }
   }
 
   if (busyApiPort) {
@@ -247,3 +311,14 @@ export async function checkPorts (ipfsd) {
   writeConfigFile(ipfsd, config)
   logger.info('[daemon] ports updated')
 }
+
+module.exports = Object.freeze({
+  configPath,
+  configExists,
+  apiFileExists,
+  rmApiFile,
+  applyDefaults,
+  migrateConfig,
+  checkCorsConfig,
+  checkPorts
+})

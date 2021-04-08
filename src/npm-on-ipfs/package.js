@@ -1,12 +1,14 @@
-import util from 'util'
-import logger from '../common/logger'
-import { IS_WIN } from '../common/consts'
-import childProcess from 'child_process'
+const util = require('util')
+const i18n = require('i18next')
+const logger = require('../common/logger')
+const { IS_WIN } = require('../common/consts')
+const { recoverableErrorDialog } = require('../dialogs')
+const childProcess = require('child_process')
 
 const execFile = util.promisify(childProcess.execFile)
 const npmBin = IS_WIN ? 'npm.cmd' : 'npm'
 
-export async function update () {
+async function update () {
   try {
     logger.info('[npm on ipfs] ipfs-npm: checking if outdated')
 
@@ -26,24 +28,38 @@ export async function update () {
   install()
 }
 
-export async function install () {
+async function install () {
   try {
     await execFile(npmBin, ['install', '-g', 'ipfs-npm'])
     logger.info('[npm on ipfs] ipfs-npm: installed globally')
     return true
-  } catch (e) {
-    logger.error(`[npm on ipfs] ${e.toString()}`)
+  } catch (err) {
+    logger.error(`[npm on ipfs] ${err.toString()}`)
+    recoverableErrorDialog(err, {
+      title: i18n.t('unableToInstallNpmOnIpfs.title'),
+      message: i18n.t('unableToInstallNpmOnIpfs.message')
+    })
     return false
   }
 }
 
-export async function uninstall () {
+async function uninstall () {
   try {
     await execFile(npmBin, ['uninstall', '-g', 'ipfs-npm'])
     logger.info('[npm on ipfs] ipfs-npm: uninstalled globally')
     return true
-  } catch (e) {
-    logger.error(`[npm on ipfs] ${e.toString()}`)
+  } catch (err) {
+    logger.error(`[npm on ipfs] ${err.toString()}`)
+    recoverableErrorDialog(err, {
+      title: i18n.t('unableToUninstallNpmOnIpfs.title'),
+      message: i18n.t('unableToUninstallNpmOnIpfs.message')
+    })
     return false
   }
 }
+
+module.exports = Object.freeze({
+  update,
+  install,
+  uninstall
+})

@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop';
 
-$url = 'https://github.com/ipfs-shipyard/ipfs-desktop/releases/download/v0.9.7/IPFS-Desktop-Setup-0.9.7.exe'
-$checksum = '9F7EEA6F418DB6E477204F44DE9FFD685E6BAB79E92949C2111CE9AE3562D428'
+$url = 'https://github.com/ipfs-shipyard/ipfs-desktop/releases/download/v0.10.4/IPFS-Desktop-Setup-0.10.4.exe'
+$checksum = '7AAA7E047800BAEDE311B0698DB66D5859C579994571BDD56CEDDD230D99AA65'
 
 $packageArgs = @{
   packageName   = 'ipfs-desktop'

@@ -1,10 +1,10 @@
-import i18n from 'i18next'
-import util from 'util'
-import sudo from 'sudo-prompt'
-import { dialog, app } from 'electron'
-import childProcess from 'child_process'
-import { recoverableErrorDialog } from './dialogs'
-import logger from './common/logger'
+const i18n = require('i18next')
+const util = require('util')
+const sudo = require('sudo-prompt')
+const { dialog, app } = require('electron')
+const childProcess = require('child_process')
+const { recoverableErrorDialog } = require('../dialogs')
+const logger = require('../common/logger')
 
 const execFile = util.promisify(childProcess.execFile)
 
@@ -15,7 +15,7 @@ const env = {
   sudo: 'env ELECTRON_RUN_AS_NODE=1'
 }
 
-const getResult = (err, stdout, stderr, scope, failSilently) => {
+const getResult = (err, stdout, stderr, scope, failSilently, errorOptions) => {
   if (stdout) {
     logger.info(`[${scope}] sudo: stdout: ${stdout.toString().trim()}`)
   }
@@ -37,14 +37,14 @@ const getResult = (err, stdout, stderr, scope, failSilently) => {
     } else if (str.includes('User did not grant permission')) {
       dialog.showErrorBox(i18n.t('noPermissionDialog.title'), i18n.t('noPermissionDialog.message'))
     } else {
-      recoverableErrorDialog(err)
+      recoverableErrorDialog(err, errorOptions)
     }
   }
 
   return false
 }
 
-export default async function ({ script, scope, failSilently, trySudo = true }) {
+module.exports = async function ({ script, scope, failSilently, trySudo = true, errorOptions }) {
   const dataArg = `--data="${app.getPath('userData')}"`
   let err = null
 
@@ -61,7 +61,7 @@ export default async function ({ script, scope, failSilently, trySudo = true }) 
 
   if (!trySudo) {
     if (!failSilently) {
-      recoverableErrorDialog(err)
+      recoverableErrorDialog(err, errorOptions)
     }
 
     return false
@@ -71,7 +71,7 @@ export default async function ({ script, scope, failSilently, trySudo = true }) 
   const command = `${env.sudo} "${process.execPath}" "${script}" ${dataArg}`
   return new Promise(resolve => {
     sudo.exec(command, { name: 'IPFS Desktop' }, (err, stdout, stderr) => {
-      resolve(getResult(err, stdout, stderr, scope, failSilently))
+      resolve(getResult(err, stdout, stderr, scope, failSilently, errorOptions))
     })
   })
 }

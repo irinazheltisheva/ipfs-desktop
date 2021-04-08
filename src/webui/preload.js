@@ -1,16 +1,25 @@
-import toPull from 'stream-to-pull-stream'
-import { ipcRenderer, remote } from 'electron'
-import readdir from 'recursive-readdir'
-import fs from 'fs-extra'
-import path from 'path'
-import screenshotHook from './screenshot'
-import connectionHook from './connection-status'
-import { COUNTLY_KEY, VERSION } from '../common/consts'
+const toPull = require('stream-to-pull-stream')
+const { ipcRenderer, remote } = require('electron')
+const readdir = require('recursive-readdir')
+const fs = require('fs-extra')
+const path = require('path')
+const screenshotHook = require('./screenshot')
+const connectionHook = require('./connection-status')
+const { COUNTLY_KEY, VERSION } = require('../common/consts')
 
 screenshotHook()
 connectionHook()
 
 const urlParams = new URLSearchParams(window.location.search)
+
+function checkIfVisible () {
+  if (document.hidden) {
+    previousHash = window.location.hash
+    window.location.hash = '/blank'
+  } else {
+    window.location.hash = previousHash
+  }
+}
 
 var originalSetItem = window.localStorage.setItem
 window.localStorage.setItem = function () {
@@ -29,12 +38,11 @@ ipcRenderer.on('updatedPage', (_, url) => {
 })
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    previousHash = window.location.hash
-    window.location.hash = '/blank'
-  } else {
-    window.location.hash = previousHash
-  }
+  checkIfVisible()
+})
+
+document.addEventListener('DOMContentReady', () => {
+  checkIfVisible()
 })
 
 window.ipfsDesktop = {
@@ -53,51 +61,33 @@ window.ipfsDesktop = {
 
   version: VERSION,
 
-  onConfigChanged: (listener) => {
-    ipcRenderer.on('config.changed', (_, config) => {
-      listener(config)
+  selectDirectory: async () => {
+    const response = await remote.dialog.showOpenDialog(remote.getCurrentWindow(), {
+      title: 'Select a directory',
+      properties: [
+        'openDirectory',
+        'createDirectory'
+      ]
     })
 
-    ipcRenderer.send('config.get')
-  },
+    if (!response || response.canceled) {
+      return
+    }
 
-  toggleSetting: (setting) => {
-    ipcRenderer.send('config.toggle', setting)
-  },
+    const files = []
+    const filesToRead = response.filePaths[0]
+    const prefix = path.dirname(filesToRead)
 
-  configHasChanged: () => {
-    ipcRenderer.send('ipfsConfigChanged')
-  },
-
-  selectDirectory: () => {
-    return new Promise(resolve => {
-      remote.dialog.showOpenDialog(remote.getCurrentWindow(), {
-        title: 'Select a directory',
-        properties: [
-          'openDirectory',
-          'createDirectory'
-        ]
-      }, async (res) => {
-        if (!res || res.length === 0) {
-          return resolve()
-        }
-
-        const files = []
-
-        const prefix = path.dirname(res[0])
-
-        for (const path of await readdir(res[0])) {
-          const size = (await fs.stat(path)).size
-          files.push({
-            path: path.substring(prefix.length, path.length),
-            content: toPull.source(fs.createReadStream(path)),
-            size: size
-          })
-        }
-
-        resolve(files)
+    for (const path of await readdir(filesToRead)) {
+      const size = (await fs.stat(path)).size
+      files.push({
+        path: path.substring(prefix.length, path.length),
+        content: toPull.source(fs.createReadStream(path)),
+        size: size
       })
-    })
+    }
+
+    return files
   },
 
   removeConsent: (consent) => {

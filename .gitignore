@@ -1,7 +1,7 @@
 node_modules
-out
 dist
 .cache
+.env
 config.gypi
 assets/webui
 *.nupkg
