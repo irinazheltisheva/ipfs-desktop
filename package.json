@@ -77,7 +77,7 @@
     "countly-sdk-nodejs": "^19.8.0",
     "electron-serve": "^1.0.0",
     "electron-store": "^6.0.0",
-    "electron-updater": "^4.3.4",
+    "electron-updater": "^6.3.0",
     "fix-path": "^3.0.0",
     "fs-extra": "^9.0.0",
     "go-ipfs-dep": "0.6.0",
